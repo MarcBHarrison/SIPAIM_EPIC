@@ -1,0 +1,220 @@
+import copy
+
+import numpy as np
+import pandas as pd
+
+class DataMetaInterface(type):
+    """
+    Provides a way for EPIC to grab all known data source interfaces.
+    """
+    def __init__(cls, name, bases, dct):
+        super().__init__(name, bases, dct)
+        if not hasattr(cls, "registry"):
+            cls.registry = {}
+        if cls.source is None:
+            return
+        elif cls.source in cls.registry:
+            raise NameError("An EPIC data source with name {} is already "
+                            "registered! First registration: '{}', Second: '{}'"
+                            .format(cls.source, cls.registry[cls.source], cls))
+        else:
+            cls.registry[cls.source] = cls
+
+class EpicDataSource(object, metaclass=DataMetaInterface):
+    """
+    Base class for epic data sources. simply inherit from this and create a
+    load function and a create_partition_matrix function, and a unique
+    source_name for your source. Then you will be able to specify
+    data_source="your_source_name" within the epic input args and everything
+    should be peachy.
+    """
+
+    registry = {}
+
+    source = None
+
+    def __init__(self, epic, source_args):
+        self.epic = epic
+        self.args = source_args
+
+        self.filepath = None
+        self.X = None
+        self.X_names = None
+        self.y = None
+
+    def load(self, info_table_name):
+        raise NotImplementedError(
+            "Please create a load method that returns two numpy arrays: "
+            "features and groups. features is size "
+            "num_subjects x num_features and groups is size num_subjects. "
+            "Should also return feature_names. Return sequence is:"
+            "return features, feature_names, groups"
+        )
+
+    def create_partitions(self, classifier_coefs):
+        raise NotImplementedError(
+            "Please create a create_partition_matrix method that returns a "
+            "numpy array of arbitrary_len x num_features"
+        )
+
+
+class Connectomics(EpicDataSource):
+
+    source = "connectomics"
+
+    def load(self, info_table_name):
+        # load csv file
+        vector_info = pd.read_csv(info_table_name)
+
+        first_col = int(self.args.get("first_col", 1))
+        last_col = int(self.args.get("last_col", 69))
+        example_data = np.loadtxt(vector_info.Features[0],
+                                  delimiter=',',
+                                  usecols=range(first_col, last_col))
+        feature_names = example_data[0, :]
+        features = np.zeros((vector_info.Features.size, example_data.shape[0]))
+
+        # load twins data
+        for i in range(0, vector_info.Features.size):
+            features[i, :] = np.loadtxt(vector_info.Features[i],
+                                        delimiter=',',
+                                        skiprows=1,
+                                        usecols=range(first_col, last_col))
+        groups = np.array(vector_info.Group)
+
+        self.filepath = info_table_name
+        self.X = copy.copy(features)
+        self.X_names = copy.copy(feature_names)
+        self.y = copy.copy(groups)
+
+        return features, feature_names, groups
+
+        return features, feature_names, groups
+
+    def create_partitions(self, coefs):
+
+        classifier.fit(features, groups)
+
+        feature_weights = np.absolute(coefs)
+        # compute all partitions
+        feature_ranks = np.argsort(feature_weights)[0]
+        train_partitions = np.zeros((self.epic.num_features,
+                                     self.epic.num_features))
+
+        train_partitions[0, :] = np.arange(self.epic.num_features)
+        for i in range(1, self.epic.num_features):
+            train_partitions[i, :] = train_partitions[i - 1, :]
+            train_partitions[i, feature_ranks[i]] = train_partitions[
+                0, feature_ranks[0]]
+
+        return train_partitions
+
+
+class FreeSurfer(EpicDataSource):
+
+    source = "freesurfer"
+
+    def load(self, info_table_name):
+
+        # load csv file
+        _features = pd.read_csv(info_table_name)
+        first_feature_idx = _features.columns.get_loc("Group") + 1
+        last_feature_idx = len(_features.columns)
+
+        first_col = self.args.get("first_col", None)
+        if first_col is not None:
+            first_feature_idx = _features.columns.get_loc(first_col)
+        last_col = self.args.get("last_col", None)
+        if last_col is not None:
+            last_feature_idx = _features.columns.get_loc(last_col)
+
+        feature_names = _features.columns[first_feature_idx:last_feature_idx]
+        self.prefixes = set([name.split("_")[0] for name in feature_names])
+        # Set variable classes Eg: VL = Volume, CT = Cortical Thickness, SA = Surface Area
+        assert self.prefixes.issubset({"Thk", "SA", "VL", "Age", "Sex", "ICV", "BDI", "CompThk", "CompVL", "CES", "TLEQadult", "TLEQchild", "Nuisance", "FA", "Vol"})
+        features = _features.as_matrix(columns=feature_names)
+        groups = np.array(_features.Group)
+
+        self.filepath = info_table_name
+        self.X = copy.copy(features)
+        self.X_names = copy.copy(feature_names)
+        self.y = copy.copy(groups)
+
+        return features, feature_names, groups
+
+    def create_partitions(self, new_weights):
+        """
+        Takes feature type into account while performing merge partitioning.
+
+        :param classifier_coefs: the feature coefficients from running a
+           classifier on the dataset
+        :return: train_partitions, a matrix where each row represents a
+           unique grouping of features to use to find an effective classifier
+           with.
+        """
+
+        weight_names = self.epic.active_feature_names
+
+        ranks = np.argsort(new_weights)
+        abs_weights = np.absolute(new_weights)
+        abs_ranks = np.argsort(abs_weights)
+
+        if self.epic.merge_flag == 'ClassifierSmallest':
+            pass
+        elif self.epic.merge_flag == 'ClassifierLargest':
+            abs_ranks = abs_ranks[::-1]
+        # > elif self.merge_flag == 'VarianceSmallest':
+        # > feature_weights = np.var(train_features, 0)
+        # > feature_ranks = np.argsort(feature_weights)[0]
+        # > elif self.merge_flag == 'VarianceLargest':
+        # > feature_weights = np.var(train_features, 0)
+        # > feature_ranks = np.argsort(feature_weights)[0]
+        # > feature_ranks[::-1]
+
+        type_ranks = {}
+        # TODO: fixme: All of this assumes classifier smallest
+        for val_type in self.prefixes:
+            pos_weights = []
+            neg_weights = []
+            for idx in ranks:
+                # ranked from most negative coef to most positive
+                if weight_names[idx].split("_")[0] == val_type:
+                    if new_weights[idx] <= 0.0:
+                        # least negative to most negative after the reverse below
+                        neg_weights.append(idx)
+                    else:
+                        # least positive to most positive
+                        pos_weights.append(idx)
+
+            if self.epic.merge_flag == 'ClassifierLargest':
+                #abs() largest to smallest
+                pos_weights.reverse()
+            else:
+                neg_weights.reverse()
+
+            type_ranks[val_type] = (neg_weights, pos_weights)
+
+        num_features = len(new_weights)
+        train_partitions = np.zeros((num_features,
+                                     num_features))
+
+        train_partitions[0, :] = np.arange(num_features)
+        for part_idx, i in enumerate(abs_ranks):
+            if part_idx == 0:
+                continue
+            wgt = new_weights[i]
+            name = weight_names[i]
+            val_type = name.split("_")[0]
+            is_neg = wgt <= 0.0
+            train_partitions[part_idx, :] = train_partitions[part_idx - 1, :]
+            neg_list, pos_list = type_ranks[val_type]
+            if is_neg:
+                rank_list = neg_list
+            else:
+                rank_list = pos_list
+            low_val_idx = rank_list[0]
+            assert(i in rank_list)
+            train_partitions[part_idx, i] = low_val_idx
+
+        return train_partitions
+
