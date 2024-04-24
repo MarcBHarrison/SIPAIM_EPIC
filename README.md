@@ -4,7 +4,7 @@ This repository contains all materials for the paper "Utilizing brain measures f
 
 ## Introduction
 
-<img src="figures/EPIC_workflow.jpeg" width="45%" align="left">
+<img src="Figures/EPIC_workflow.jpeg" width="85%" height="85%" align="left">
 
 <br clear="left" />
 <br clear="right" />
